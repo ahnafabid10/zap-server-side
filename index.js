@@ -2,7 +2,10 @@ const express = require('express')
 const app = express()
 var cors = require('cors')
 require('dotenv').config()
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
+
+
 const port = process.env.PORT || 3000;
 
 
@@ -51,6 +54,13 @@ async function run() {
         res.send(result);
     })
 
+    app.get('/parcels/:id', async (req, res)=>{
+      const id = req.params.id;
+      const query = { _id : new ObjectId(id)}
+      const result = await parcelsCollection.findOne(query)
+      res.send(result)
+    })
+
 
 
     app.post('/parcels', async(req,res)=>{
@@ -59,6 +69,38 @@ async function run() {
         parcel.createAt = new Date();
         const result = await parcelsCollection.insertOne(parcel);
         res.send(result);
+    })
+
+    app.delete('/parcels/:id', async (req, res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+
+      const result = await parcelsCollection.deleteOne(query);
+      res.send(result)
+    })
+
+
+    //payment related Apis
+    app.post('/create-checkout-session', async (req, res)=>{
+      const paymentInfo = req.body;
+      const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+        price_data: {
+          currency: 'USD',
+          unit_data: 1500,
+          product_data:{
+            name:paymentInfo.parcelName
+          }
+        },
+        quantity: 1,
+      },
+    ],
+    customer_email: paymentInfo.senderEmail,
+    mode: 'payment',
+    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+  });
     })
 
 
