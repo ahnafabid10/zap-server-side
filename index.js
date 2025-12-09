@@ -8,6 +8,16 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
 const port = process.env.PORT || 3000;
 
+const crypto = require("crypto")
+
+function generateTrackingId() {
+    const prefix = "PRCL"; // your brand prefix
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
+
+    return `${prefix}-${date}-${random}`;
+}
+
 
 //middleware
 app.use(express.json());
@@ -37,6 +47,7 @@ async function run() {
       // Connect to the "sample_mflix" database and access its "movies" collection
     const database = client.db("zap_shift_db");
     const parcelsCollection = database.collection("parcels");
+    const paymentCollection = database.collection('payments')
 
     //parcel api
     app.get('/parcels', async(req,res)=>{
@@ -81,7 +92,7 @@ async function run() {
 
 
     //payment related Apis
-    app.post('/create-checkout-session', async (req, res)=>{
+    app.post('/payment-checkout-session', async (req, res)=>{
       const paymentInfo = req.body;
       const amount = parseInt(paymentInfo.cost) * 100;
       const session = await stripe.checkout.sessions.create({
@@ -90,7 +101,8 @@ async function run() {
         // Provide the exact Price ID (for example, price_1234) of the product you want to sell
         price_data: {
           currency: 'USD',
-          unit_data: amount,
+          // unit_data: amount,
+           unit_amount: amount,
           product_data:{
             name:paymentInfo.parcelName
           }
@@ -101,10 +113,64 @@ async function run() {
     customer_email: paymentInfo.senderEmail,
     mode: 'payment',
     metadata:{
-      parcelId: paymentInfo.parcelId
+      parcelId: paymentInfo.parcelId,
+      parcelName: paymentInfo.parcelName
     },
     cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
   });
+
+  res.send({url: session.url})
+    })
+
+    app.patch('/payment-success', async(req, res)=>{
+      const sessionId = req.query.sessionId_id;
+      
+
+      const session = await stripe.checkout.sessions.retrieve(sessionId)
+      const trackingId = generateTrackingId()
+
+      console.log('sessions retrieve', session)
+
+      if(session.payment_status === 'paid'){
+        const id = session.metadata.parcelId
+        const query = {_id: new ObjectId(id)}
+        const update ={
+          $set:{
+            paymentStatus: 'paid',
+            trackingId: trackingId
+
+          }
+        }
+        const result = await parcelsCollection.updateOne(query, update)
+
+
+        const payment = {
+          amount: session.amount_total/100,
+          currency: session.currency,
+          customerEmail: session.customer_email,
+          parcelId: session.metadata.parcelId,
+          parcelName: session.metadata.parcelName,
+          transaction: session.payment_intent,
+          paymentStatus: session.payment_status,
+          paidAt: new Date(),
+          
+
+        }
+
+        if(session.payment_status === 'paid'){
+          const resultPayment = await paymentCollection.insertOne(payment)
+          res.send({success: true, 
+            modifyParcel: result,
+            trackingId: trackingId,
+            transactionId: session.payment_intent,
+            paymentInfo: resultPayment,
+
+          })
+        }
+      }
+
+      res.send({success: false})
     })
 
 
